@@ -1,6 +1,7 @@
 const KJUR = require('jsrsasign');
 const crypto = require('crypto');
 const ethereumJSUtil = require('ethereumjs-util');
+const ecPem          = require('ec-pem');
 
 /**
  * Internal Token Logic
@@ -77,16 +78,15 @@ function b64tohex(data) {
 var exportedFunctions = {}
 exportedFunctions.Type = u2f.TokenTypes;
 exportedFunctions.U2FToken = class U2FToken {
-    constructor(keys, tokenType) {
-        if (tokenType != u2f.TokenTypes.SECP256K1WithEthereumStyleKeccak &&
-            tokenType != u2f.TokenTypes.SECP256R1WithSHA256)
+    constructor(keys, algo) {
+        if (algo != u2f.TokenTypes.SECP256K1WithEthereumStyleKeccak &&
+            algo != u2f.TokenTypes.SECP256R1WithSHA256)
             return undefined;
 
-        this.algo = tokenType
+        this.algo = algo;
     
         this.attestationKey = generateKeyPair(this.algo)
         this.attestationCertificate = generateAttestationCertificate(this.attestationKey, this.algo)
-
         this.keys = keys || [];
 
         return this;
@@ -159,18 +159,20 @@ exportedFunctions.U2FToken = class U2FToken {
         var keyPair = generateKeyPair(this.algo);
 
         var clientData = getClientDataStringFromRequest(request);
-        var clientDataHash = hash(clientData, this.algo);
-        var applicationIdHash = hash(request.appId, this.algo);
+
+        // we can always hash this with SHA-256 since it does not matter to the signature
+        var clientDataHash = hashHex(clientData.toString('hex'), u2f.TokenTypes.SECP256R1WithSHA256);
+        var applicationIdHash = hashHex(request.appId.toString('hex'), u2f.TokenTypes.SECP256R1WithSHA256);
+
 
         var keyHandle = generateKeyHandle();
         var keyHandleLength = getKeyHandleLengthString(keyHandle);
 
-        var registrationBaseString = getRegistrationSignatureBaseString(applicationIdHash, clientDataHash, keyHandle, keyPair.getPublicKey('hex', 'uncompressed'));
-        
+        var registrationBaseString = getRegistrationSignatureBaseString(applicationIdHash, clientDataHash, keyHandle, keyPair.getPublicKey('hex'));
+
         var signature = signHex(this.attestationKey, this.algo, registrationBaseString);
 
-        var response = RESERVED_BYTE + keyPair.getPublicKey('hex', 'uncompressed') + keyHandleLength + keyHandle + this.attestationCertificate.toString('hex') + signature;
-
+        var response = RESERVED_BYTE + keyPair.getPublicKey('hex') + keyHandleLength + keyHandle + this.attestationCertificate.toString('hex') + signature;
 
         this.SaveKey(request.appId, keyHandle, keyPair);
 
@@ -230,9 +232,9 @@ exportedFunctions.U2FToken = class U2FToken {
         } 
 
         var clientData = getClientDataStringFromRequest(request);
-        var clientDataHash = hash(clientData, this.algo);
+        var clientDataHash = hashHex(clientData.toString('hex'), this.algo);
         var applicationId = getApplicationIdFromRequest(request);
-        var applicationIdHash = hash(applicationId, this.algo);
+        var applicationIdHash = hash(applicationId.toString('hex'), this.algo);
 
         //var sessionID = getSessionIdFromRequest(request);
         var challenge = getChallengeFromRequest(request);
@@ -313,19 +315,47 @@ var counterPadding = function (num) {
 
 
 var signHex = function (key, algo, message) {
-    if (algo == u2f.SECP256K1WithEthereumStyleKeccak) {
-        hashedMsg = ethereumJSUtil.keccak256(message)
+    if (algo == u2f.TokenTypes.SECP256K1WithEthereumStyleKeccak) {
+        hashedMsg = ethereumJSUtil.keccak256(Buffer.from(message, 'hex'));
         personalMsg = ethereumJSUtil.hashPersonalMessage(hashedMsg)
-        rsv = ethereumJSUtil.ecsign(personalMsg, key.getPrivateKey('hex', 'uncompressed'))
-        return Buffer.from(rsv.r.toString('hex') + rsv.s.toString('hex') + rsv.v.toString(16), 'hex');
-    } else if (algo == u2f.SECP256R1WithSHA256) {
+        rsv = ethereumJSUtil.ecsign(personalMsg, Buffer.from(key.getPrivateKey('hex'), 'hex'));
+        return Buffer.from(rsv.r.toString('hex') + rsv.s.toString('hex') + rsv.v.toString(16), 'hex').toString('hex');
+    } else if (algo == u2f.TokenTypes.SECP256R1WithSHA256) {
         var signer = crypto.createSign('RSA-SHA256');
-        signer.update(message);
+        signer.update(message, 'hex');
         return signer.sign(ecPem(key, 'prime256v1').encodePrivateKey(), 'hex');
     }
     
     return undefined;
 };
+
+
+var verifyHex = function(message, key, signature, algo) {
+    if (algo == u2f.TokenTypes.SECP256K1WithEthereumStyleKeccak) {
+        // A signature is built like this:
+        // r (32 bytes) | s (32 Bytes) | v (1 byte)
+        
+        hashedMsg = ethereumJSUtil.keccak256(Buffer.from(message, 'hex'));
+        personalMsg = ethereumJSUtil.hashPersonalMessage(hashedMsg)
+
+        data = Buffer.from(signature, 'hex');
+
+        let r = data.slice(0, 32);
+        let s = data.slice(32, 64);
+        let v = data.readUInt8(64);
+
+        let recoveredPublicKey = ethereumJSUtil.ecrecover(personalMsg, v, r, s).toString('hex');
+        let pubKey = key.getPublicKey('hex').slice(2);
+
+        return (pubKey == recoveredPublicKey);
+    } else if (algo == u2f.TokenTypes.SECP256R1WithSHA256) {
+        var verifier = crypto.createVerify('RSA-SHA256');
+        verifier.update(message, 'hex');
+        return verifier.verify(ecPem(key, 'prime256v1').encodePublicKey(), signature, 'hex');
+    }
+    
+    return undefined;
+}
 
 /**
  * Gets a signature base String for registration
@@ -369,11 +399,11 @@ var decimalNumberToHexByte = function (dec) {
 };
 
 
-var hash = function(message, algorithm)  {
-    if (algorithm == u2f.SECP256R1WithSHA256) {
-        return ethereumJSUtil.sha256(message);
-    } else if (algorithm == u2f.SECP256K1WithEthereumStyleKeccak) {
-        return ethereumJSUtil.keccak256(message)
+var hashHex = function(message, algorithm)  {
+    if (algorithm == u2f.TokenTypes.SECP256R1WithSHA256) {
+        return crypto.createHash('sha256').update(message, 'hex').digest().toString('hex');
+    } else if (algorithm == u2f.TokenTypes.SECP256K1WithEthereumStyleKeccak) {
+        return ethereumJSUtil.keccak256(message).toString('hex');
     }
 
     return undefined;
@@ -387,10 +417,10 @@ var getClientDataStringFromRequest = function (request) {
     
     switch (request.type) {
         case u2f.MessageTypes.U2F_REGISTER_REQUEST:
-            return JSON.stringify({challenge: request.registerRequests[0].challenge});
+            return Buffer.from(JSON.stringify({challenge: request.registerRequests[0].challenge}));
             break;
         case u2f.MessageTypes.U2F_SIGN_REQUEST:
-            return JSON.stringify({challenge: request.challenge});
+            return Buffer.from(JSON.stringify({challenge: request.challenge}));
             break;
         default:
             throw new Error("Invalid Request Type");
@@ -418,7 +448,7 @@ var getApplicationIdFromRequest = function (request) {
 };
 
 
-function generateKeyPair(tokenType) {
+var generateKeyPair = function(tokenType) {
     if (tokenType == u2f.TokenTypes.SECP256R1WithSHA256) {
         var secpr1 = crypto.createECDH('prime256v1');
         secpr1.generateKeys();
@@ -432,7 +462,7 @@ function generateKeyPair(tokenType) {
 
 
 
-function generateAttestationCertificate(key, algo) {
+var generateAttestationCertificate = function(key, algo) {
     var ecdsa;
 
     if (algo == u2f.TokenTypes.SECP256K1WithEthereumStyleKeccak) {
@@ -445,8 +475,8 @@ function generateAttestationCertificate(key, algo) {
         });
     }
 
-   ecdsa.setPrivateKeyHex(key.getPrivateKey('hex', 'uncompressed'));
-   ecdsa.setPublicKeyHex(key.getPublicKey('hex', 'uncompressed'));
+   ecdsa.setPrivateKeyHex(key.getPrivateKey('hex'));
+   ecdsa.setPublicKeyHex(key.getPublicKey('hex'));
 
    var tbsc = new KJUR.asn1.x509.TBSCertificate();
    tbsc.setSerialNumberByParam({
@@ -507,6 +537,5 @@ var getKeyHandleLengthString = function (keyHandle) {
     
     return decimalNumberToHexByte(keyHandle.length / 2);
 };
-
 
 module.exports = exportedFunctions;
