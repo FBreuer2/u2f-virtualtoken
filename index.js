@@ -234,13 +234,13 @@ exportedFunctions.U2FToken = class U2FToken {
         var clientData = getClientDataStringFromRequest(request);
         var clientDataHash = hashHex(clientData.toString('hex'), this.algo);
         var applicationId = getApplicationIdFromRequest(request);
-        var applicationIdHash = hash(applicationId.toString('hex'), this.algo);
+        var applicationIdHash = hashHex(applicationId.toString('hex'), this.algo);
 
         //var sessionID = getSessionIdFromRequest(request);
         var challenge = getChallengeFromRequest(request);
         var counterHex = counterPadding(key.counter);
 
-        var signature = signHex(key, this.algo, getSignSignatureBaseString(applicationIdHash, counterHex, clientDataHash));
+        var signature = signHex(key.key, this.algo, getSignSignatureBaseString(applicationIdHash, counterHex, clientDataHash));
         
         var signatureData = hextob64(USER_PRESENCE_BYTE + counterHex + signature);
         
