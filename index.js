@@ -231,16 +231,18 @@ exportedFunctions.U2FToken = class U2FToken {
             });
         } 
 
+        // Always use Sha256 since it doesn't matter here
         var clientData = getClientDataStringFromRequest(request);
-        var clientDataHash = hashHex(clientData.toString('hex'), this.algo);
+        var clientDataHash = hashHex(clientData.toString('hex'), u2f.TokenTypes.SECP256R1WithSHA256);
         var applicationId = getApplicationIdFromRequest(request);
-        var applicationIdHash = hashHex(applicationId.toString('hex'), this.algo);
+        var applicationIdHash = hashHex(applicationId.toString('hex'), u2f.TokenTypes.SECP256R1WithSHA256);
 
         //var sessionID = getSessionIdFromRequest(request);
         var challenge = getChallengeFromRequest(request);
         var counterHex = counterPadding(key.counter);
 
-        var signature = signHex(key.key, this.algo, getSignSignatureBaseString(applicationIdHash, counterHex, clientDataHash));
+        var signatureBase = getSignSignatureBaseString(applicationIdHash, counterHex, clientDataHash);
+        var signature = signHex(key.key, this.algo, signatureBase);
         
         var signatureData = hextob64(USER_PRESENCE_BYTE + counterHex + signature);
         
