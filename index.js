@@ -469,11 +469,11 @@ var generateAttestationCertificate = function(key, algo) {
 
     if (algo == u2f.TokenTypes.SECP256K1WithEthereumStyleKeccak) {
         ecdsa = new KJUR.crypto.ECDSA({
-        "curve": "secp256r1"
+        "curve": "secp256k1"
         });
     } else if (algo == u2f.TokenTypes.SECP256R1WithSHA256) {
         ecdsa = new KJUR.crypto.ECDSA({
-            "curve": "secp256k1"
+            "curve": "secp256r1"
         });
     }
 
